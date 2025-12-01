@@ -29,7 +29,7 @@
 │                    │ (닫힘)   │     모든 요청 통과          │
 │                    └────┬────┘                              │
 │                         │                                   │
-│            실패율 > 임계값 (예: 50%)                         │
+│            실패율 > 임계값 (예: 40%)                         │
 │                         │                                   │
 │                         ▼                                   │
 │                    ┌─────────┐                              │
@@ -37,7 +37,7 @@
 │        │          │ (열림)   │     모든 요청 즉시 실패      │
 │        │          └────┬────┘                              │
 │        │               │                                   │
-│        │      대기 시간 경과 (예: 10초)                     │
+│        │      대기 시간 경과 (예: 15초)                     │
 │        │               │                                   │
 │        │               ▼                                   │
 │        │          ┌──────────┐                             │
@@ -52,7 +52,6 @@
 │        │    ▼                     │                        │
 │        │  CLOSED                  │                        │
 │        │  (복구)                  │                        │
-│        │                         │                        │
 │        └─────────────────────────┘                         │
 │                                                             │
 └─────────────────────────────────────────────────────────────┘
@@ -72,53 +71,28 @@ public PaymentResult paymentFallback(PaymentRequest request, Exception e) {
 }
 ```
 
----
-
 #### Retry (재시도)
 
 **왜 필요한가?**
 > 일시적인 네트워크 오류 등을 자동으로 복구
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    Retry 동작 방식                           │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│   요청                                                      │
-│     │                                                       │
-│     ▼                                                       │
-│   1차 시도 ──────────────────────────────────────> 성공 ✓   │
-│     │                                                       │
-│     │ 실패                                                  │
-│     ▼                                                       │
-│   ⏳ 대기 (1초)                                             │
-│     │                                                       │
-│     ▼                                                       │
-│   2차 시도 ──────────────────────────────────────> 성공 ✓   │
-│     │                                                       │
-│     │ 실패                                                  │
-│     ▼                                                       │
-│   ⏳ 대기 (2초) ← 지수 백오프 (Exponential Backoff)         │
-│     │                                                       │
-│     ▼                                                       │
-│   3차 시도 ──────────────────────────────────────> 성공 ✓   │
-│     │                                                       │
-│     │ 실패                                                  │
-│     ▼                                                       │
-│   ❌ 최종 실패 (maxAttempts 도달)                           │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
+요청
+  │
+  ▼
+1차 시도 ──────────────────────────────────────> 성공 ✓
+  │
+  │ 실패
+  ▼
+⏳ 대기 (500ms)
+  │
+  ▼
+2차 시도 ──────────────────────────────────────> 성공 ✓
+  │
+  │ 실패
+  ▼
+❌ 최종 실패 (maxAttempts=2 도달)
 ```
-
-**코드 예시**
-```java
-@Retry(name = "externalCardApiRetry", fallbackMethod = "externalApiFallback")
-public CardAuthResult authorizeExternal(CardAuthRequest request) {
-    return externalCardApi.authorize(request);
-}
-```
-
----
 
 #### Bulkhead (격벽)
 
@@ -126,88 +100,40 @@ public CardAuthResult authorizeExternal(CardAuthRequest request) {
 > 동시 호출 수 제한으로 리소스 고갈 방지
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    Bulkhead 동작 방식                        │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│   ┌──────────────────────────────────────────────────┐      │
-│   │               Bulkhead (최대 10개)                │      │
-│   │  ┌───┐ ┌───┐ ┌───┐ ┌───┐ ┌───┐                  │      │
-│   │  │ 1 │ │ 2 │ │ 3 │ │...│ │10 │ ← 동시 처리 중   │      │
-│   │  └───┘ └───┘ └───┘ └───┘ └───┘                  │      │
-│   └──────────────────────────────────────────────────┘      │
-│                          │                                  │
-│                          │                                  │
-│   요청 11번 ─────────────┤                                  │
-│                          │                                  │
-│          ┌───────────────┴───────────────┐                  │
-│          │                               │                  │
-│    maxWaitDuration > 0            maxWaitDuration = 0       │
-│          │                               │                  │
-│          ▼                               ▼                  │
-│       대기열                        즉시 거부               │
-│      (대기 중)                  BulkheadFullException       │
-│          │                                                  │
-│    대기 시간 초과                                           │
-│          │                                                  │
-│          ▼                                                  │
-│        거부                                                 │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────┐
+│               Bulkhead (최대 50개)                │
+│  ┌───┐ ┌───┐ ┌───┐ ┌───┐ ┌───┐ ... ┌───┐       │
+│  │ 1 │ │ 2 │ │ 3 │ │...│ │49 │     │50 │       │
+│  └───┘ └───┘ └───┘ └───┘ └───┘     └───┘       │
+└──────────────────────────────────────────────────┘
+                       │
+요청 51번 ─────────────┤
+                       │
+              maxWaitDuration = 100ms
+                       │
+                 시간 초과 → ❌ BulkheadFullException
 ```
 
-**코드 예시**
-```java
-@Bulkhead(name = "paymentBulkhead", fallbackMethod = "bulkheadFallback")
-public PaymentResult processPayment(PaymentRequest request) {
-    // 최대 50개 동시 처리
-    return doPayment(request);
-}
-```
-
----
-
-#### Rate Limiter (속도 제한)
+#### RateLimiter (속도 제한)
 
 **왜 필요한가?**
 > 초당 요청 수 제한으로 서버 보호 및 외부 API 정책 준수
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                  Rate Limiter 동작 방식                      │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│   토큰 버킷 (Token Bucket) 방식                             │
-│                                                             │
-│   ┌─────────────────────────────┐                           │
-│   │ 버킷: [●●●●●●●●●●]          │ ← 초당 100개 토큰 생성    │
-│   │       (100개 토큰)          │                           │
-│   └─────────────────────────────┘                           │
-│                  │                                          │
-│                  │                                          │
-│   요청 1 ────────┼──> 토큰 1개 소비 → 처리 ✓               │
-│   요청 2 ────────┼──> 토큰 1개 소비 → 처리 ✓               │
-│   ...            │                                          │
-│   요청 100 ──────┼──> 토큰 1개 소비 → 처리 ✓               │
-│   요청 101 ──────┼──> 토큰 없음! → ❌ 거부                  │
-│                  │                                          │
-│             1초 후 토큰 리필                                 │
-│                  │                                          │
-│   요청 102 ──────┼──> 토큰 1개 소비 → 처리 ✓               │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
+토큰 버킷 (Token Bucket) 방식
 
-**코드 예시**
-```java
-@RateLimiter(name = "externalCardApiRateLimiter", fallbackMethod = "rateLimitFallback")
-public CardAuthResult authorizeExternal(CardAuthRequest request) {
-    // 초당 50건 제한 (외부 카드사 API 정책)
-    return externalCardApi.authorize(request);
-}
+┌─────────────────────────────┐
+│ 버킷: [●●●●●●●●●●]          │ ← 초당 50개 토큰 생성
+│       (50개 토큰)           │
+└─────────────────────────────┘
+               │
+요청 1~50 ─────┼──> 토큰 소비 → 처리 ✓
+요청 51 ───────┼──> 토큰 없음! → ❌ RequestNotPermitted
+               │
+          1초 후 토큰 리필
+               │
+요청 52 ───────┼──> 토큰 소비 → 처리 ✓
 ```
-
----
 
 ### 2. 패턴 조합
 
@@ -226,78 +152,232 @@ public PaymentResult processPayment(PaymentRequest request) {
 
 ## 🗄️ 도메인 모델
 
-### Card Entity
-
+### 도메인 구조 (2개 Bounded Context)
 ```
-┌─────────────────────────────────────────────┐
-│                   Card                       │
-├─────────────────────────────────────────────┤
-│ id: Long (PK, Auto)                         │
-│ cardNumber: String (16자리, 암호화)          │
-│ cardNumberMasked: String (9410-****-****-1234)│
-│ userId: Long (FK → User)                    │
-│ accountId: Long (FK → Account)              │
-│ cardType: CardType                          │
-│ status: CardStatus                          │
-│ expiryDate: YearMonth (MM/YY)               │
-│ cvc: String (암호화)                        │
-│ dailyLimit: BigDecimal                      │
-│ monthlyLimit: BigDecimal                    │
-│ dailyUsed: BigDecimal                       │
-│ monthlyUsed: BigDecimal                     │
-│ createdAt: LocalDateTime                    │
-│ version: Long (@Version)                    │
-└─────────────────────────────────────────────┘
-```
-
-### Payment Entity
-
-```
-┌─────────────────────────────────────────────┐
-│                  Payment                     │
-├─────────────────────────────────────────────┤
-│ id: Long (PK, Auto)                         │
-│ paymentId: String (UUID, Unique)            │
-│ cardId: Long (FK → Card)                    │
-│ merchantName: String (가맹점명)              │
-│ merchantId: String (가맹점 ID)               │
-│ amount: BigDecimal                          │
-│ status: PaymentStatus                       │
-│ approvalNumber: String (승인 번호)           │
-│ failReason: String                          │
-│ requestedAt: LocalDateTime                  │
-│ approvedAt: LocalDateTime                   │
-│ cancelledAt: LocalDateTime                  │
-└─────────────────────────────────────────────┘
+domain/
+├── card/                              # 카드 도메인 (8개)
+│   └── domain/
+│       ├── exception/
+│       │   ├── CardErrorCode.java     # 카드 에러 코드 (CRD_xxx)
+│       │   └── CardException.java     # 카드 예외
+│       └── model/
+│           ├── Card.java              # Aggregate Root (한도 관리)
+│           ├── CardStatus.java        # ACTIVE/INACTIVE/BLOCKED/EXPIRED/TERMINATED
+│           ├── CardType.java          # DEBIT/CREDIT
+│           └── vo/
+│               ├── CardId.java        # CRD-xxxxxxxx
+│               ├── CardNumber.java    # 16자리 (Luhn 알고리즘)
+│               └── Money.java         # 금액 VO
+│
+└── payment/                           # 결제 도메인 (6개)
+    └── domain/
+        ├── exception/
+        │   ├── PaymentErrorCode.java  # 결제 에러 코드 (PAY_xxx)
+        │   └── PaymentException.java  # 결제 예외
+        └── model/
+            ├── Payment.java           # Aggregate Root
+            ├── PaymentStatus.java     # PENDING/APPROVED/DECLINED/CANCELLED/REFUNDED
+            └── vo/
+                ├── PaymentId.java     # PAY-xxxxxxxx
+                └── Money.java         # 금액 VO
 ```
 
-### CardType Enum
+### 도메인 분리 이유
+| 도메인 | 책임 | 특성 |
+|--------|------|------|
+| **card** | 카드 발급/관리, 한도 정책 | 상태 변경 가능, Luhn 알고리즘 |
+| **payment** | 결제 생명주기 관리 | 승인/취소/환불, 독립적인 Aggregate |
+
+### Card 도메인 모델
+```
+┌─────────────────────────────────────────────────────────────┐
+│                           Card                               │
+├─────────────────────────────────────────────────────────────┤
+│ 【핵심 필드】                                                 │
+│ cardId: CardId (PK, CRD-xxxxxxxx)                           │
+│ cardNumber: CardNumber (16자리, Luhn 검증)                  │
+│ userId: String (USR-xxx)                                    │
+│ accountId: String (ACC-xxx, 연결 계좌)                      │
+│ cardType: CardType (DEBIT/CREDIT)                          │
+│ status: CardStatus                                          │
+│ expiryDate: YearMonth (발급일 + 5년)                        │
+│ cvc: String (3자리, 암호화)                                 │
+├─────────────────────────────────────────────────────────────┤
+│ 【한도 필드】                                                 │
+│ dailyLimit, monthlyLimit (설정 한도)                        │
+│ dailyUsed, monthlyUsed (사용액)                             │
+│ lastUsedDate, lastUsedMonth (초기화 기준)                   │
+│ version: Long (@Version, 동시성 제어)                       │
+├─────────────────────────────────────────────────────────────┤
+│ 【감사 필드 - BaseEntity】                                    │
+│ createdAt, updatedAt, createdBy, updatedBy                  │
+│ deletedAt, deletedBy, isDeleted (Soft Delete)               │
+├─────────────────────────────────────────────────────────────┤
+│ 【한도 관리 메서드】                                          │
+│ + validatePayment(amount)  // 상태, 유효기간, 한도 검증      │
+│ + recordPayment(amount)    // 사용액 누적                    │
+│ + recordCancellation(amount) // 사용액 차감                  │
+├─────────────────────────────────────────────────────────────┤
+│ 【상태 변경 메서드】                                          │
+│ + activate(), deactivate()                                  │
+│ + block(), unblock() (분실/도난 신고)                       │
+│ + terminate(), expire()                                     │
+│ + changeLimits(daily, monthly)                              │
+├─────────────────────────────────────────────────────────────┤
+│ 【상태 확인 메서드】                                          │
+│ + isNew(), isActive(), isExpired(), canPay()                │
+│ + isDebitCard(), isCreditCard()                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### CardType Enum (정책 메서드)
 ```java
 public enum CardType {
-    DEBIT,    // 체크카드 (즉시 출금)
-    CREDIT    // 신용카드 (후불)
+    DEBIT("체크카드", immediateDebit=true, dailyDefault=500만, monthlyDefault=5000만),
+    CREDIT("신용카드", immediateDebit=false, dailyDefault=1000만, monthlyDefault=1억);
+    
+    public boolean isImmediateDebit();  // 즉시 출금 여부
+    public BigDecimal getDefaultDailyLimit();
+    public BigDecimal getDefaultMonthlyLimit();
+    public boolean isDebit();
+    public boolean isCredit();
 }
 ```
 
-### CardStatus Enum
+### CardStatus Enum (상태 전이)
+```
+ACTIVE ────┬── 비활성화 ──▶ INACTIVE ──┬── 활성화 ──▶ ACTIVE
+           ├── 분실신고 ──▶ BLOCKED ───┼── 해제 ────▶ ACTIVE
+           ├── 만료 ──────▶ EXPIRED ───┘
+           └── 해지 ──────────────────────────────▶ TERMINATED (최종)
+```
+
+**정책 메서드:**
 ```java
 public enum CardStatus {
-    ACTIVE,      // 정상
-    INACTIVE,    // 비활성화
-    BLOCKED,     // 분실/도난 신고
-    EXPIRED,     // 만료
-    TERMINATED   // 해지
+    ACTIVE, INACTIVE, BLOCKED, EXPIRED, TERMINATED;
+    
+    public boolean canPay();           // 결제 가능 여부
+    public boolean canReactivate();    // 재활성화 가능 여부
+    public boolean canTerminate();     // 해지 가능 여부
+    public boolean canTransitionTo(CardStatus target);
+    public Set<CardStatus> getAllowedTransitions();
 }
 ```
 
-### PaymentStatus Enum
+### Payment 도메인 모델
+```
+┌─────────────────────────────────────────────────────────────┐
+│                         Payment                              │
+├─────────────────────────────────────────────────────────────┤
+│ 【핵심 필드】                                                 │
+│ paymentId: PaymentId (PAY-xxxxxxxx)                         │
+│ cardId: String (CRD-xxx)                                    │
+│ merchantName: String (가맹점명)                              │
+│ merchantId: String (가맹점 ID)                               │
+│ amount: Money                                               │
+│ status: PaymentStatus                                       │
+│ approvalNumber: String (승인 번호)                          │
+│ failReason, cancelReason: String                            │
+│ idempotencyKey: String (멱등성 키)                          │
+│ requestedAt, approvedAt, cancelledAt                        │
+├─────────────────────────────────────────────────────────────┤
+│ 【감사 필드】                                                 │
+│ createdAt, updatedAt, createdBy, updatedBy                  │
+│ deletedAt, deletedBy, isDeleted (Soft Delete)               │
+├─────────────────────────────────────────────────────────────┤
+│ 【비즈니스 메서드】                                           │
+│ + approve(approvalNumber)  // → APPROVED                    │
+│ + decline(reason)          // → DECLINED                    │
+│ + cancel(reason)           // → CANCELLED (당일 취소)       │
+│ + refund(reason)           // → REFUNDED (익일 이후 환불)   │
+├─────────────────────────────────────────────────────────────┤
+│ 【상태 확인 메서드】                                          │
+│ + isNew(), isPending(), isApproved(), isDeclined()          │
+│ + canCancel(), isFinal()                                    │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### PaymentStatus Enum (상태 전이)
+```
+              승인 성공
+┌─────────┐ ─────────▶ ┌──────────┐ ─── 취소 ──▶ ┌───────────┐
+│ PENDING │            │ APPROVED │              │ CANCELLED │
+└─────────┘            └──────────┘              └───────────┘
+     │                       │
+     │ 승인 거절             │ 환불
+     ▼                       ▼
+┌──────────┐            ┌──────────┐
+│ DECLINED │            │ REFUNDED │
+└──────────┘            └──────────┘
+```
+
+**정책 메서드:**
 ```java
 public enum PaymentStatus {
-    PENDING,    // 처리 중
-    APPROVED,   // 승인
-    DECLINED,   // 거절
-    CANCELLED,  // 취소
-    REFUNDED    // 환불
+    PENDING, APPROVED, DECLINED, CANCELLED, REFUNDED;
+    
+    public boolean isFinal();
+    public boolean canCancel();
+    public boolean canTransitionTo(PaymentStatus target);
+}
+```
+
+### CardNumber VO (Luhn 알고리즘)
+```java
+public record CardNumber(String value) {
+    public static final String BIN = "9410";  // jun-bank 카드사 번호
+    
+    public static CardNumber generate();      // 새 카드번호 생성 (BIN + 11자리 + 체크디지트)
+    public String masked();                   // 9410-****-****-1234
+    public String formatted();                // 9410-1234-5678-9012
+    public String getPrefix();                // 앞 6자리
+    public String getLastFour();              // 뒤 4자리
+}
+```
+
+### Exception 체계
+
+#### CardErrorCode (CRD_xxx)
+```java
+public enum CardErrorCode implements ErrorCode {
+    // 유효성 (400)
+    INVALID_CARD_ID_FORMAT, INVALID_CARD_NUMBER_FORMAT, 
+    INVALID_CVC, INVALID_LIMIT, INVALID_EXPIRY_DATE,
+    
+    // 조회 (404)
+    CARD_NOT_FOUND,
+    
+    // 한도 (400)
+    DAILY_LIMIT_EXCEEDED, MONTHLY_LIMIT_EXCEEDED, SINGLE_PAYMENT_LIMIT_EXCEEDED,
+    
+    // 상태 (422)
+    CARD_NOT_ACTIVE, CARD_BLOCKED, CARD_EXPIRED, CARD_TERMINATED,
+    CARD_ALREADY_ACTIVE, INVALID_STATUS_TRANSITION, NOT_CARD_OWNER,
+    
+    // 외부 시스템 (503/429)
+    EXTERNAL_API_ERROR, CIRCUIT_BREAKER_OPEN, RATE_LIMIT_EXCEEDED, ACCOUNT_SERVICE_ERROR;
+}
+```
+
+#### PaymentErrorCode (PAY_xxx)
+```java
+public enum PaymentErrorCode implements ErrorCode {
+    // 유효성 (400)
+    INVALID_PAYMENT_ID_FORMAT, INVALID_AMOUNT, MINIMUM_PAYMENT_AMOUNT,
+    
+    // 조회 (404)
+    PAYMENT_NOT_FOUND,
+    
+    // 결제 처리 (400)
+    PAYMENT_ALREADY_APPROVED, PAYMENT_ALREADY_CANCELLED, 
+    PAYMENT_CANNOT_CANCEL, INSUFFICIENT_BALANCE, PAYMENT_DECLINED,
+    
+    // 상태 (422)
+    INVALID_STATUS_TRANSITION,
+    
+    // 외부 시스템 (503/429)
+    EXTERNAL_API_ERROR, CIRCUIT_BREAKER_OPEN, RATE_LIMIT_EXCEEDED;
 }
 ```
 
@@ -308,12 +388,12 @@ public enum PaymentStatus {
 ### 1. 카드 발급 신청
 ```http
 POST /api/v1/cards
-X-User-Id: 1
+X-User-Id: USR-a1b2c3d4
 X-User-Role: USER
 Content-Type: application/json
 
 {
-  "accountId": 1,
+  "accountId": "ACC-12345678",
   "cardType": "DEBIT",
   "dailyLimit": 1000000,
   "monthlyLimit": 10000000
@@ -323,198 +403,72 @@ Content-Type: application/json
 **Response (201 Created)**
 ```json
 {
-  "cardId": 1,
+  "cardId": "CRD-a1b2c3d4",
   "cardNumber": "9410-****-****-1234",
   "cardType": "DEBIT",
-  "expiryDate": "01/29",
   "status": "ACTIVE",
+  "expiryDate": "12/29",
   "dailyLimit": 1000000,
   "monthlyLimit": 10000000,
-  "createdAt": "2024-01-15T10:30:00"
+  "createdAt": "2024-01-15T10:00:00"
 }
 ```
 
-**이벤트 발행**: `card.issued`
-
----
-
-### 2. 내 카드 목록 조회
-```http
-GET /api/v1/cards
-X-User-Id: 1
-X-User-Role: USER
-```
-
-**Response (200 OK)**
-```json
-{
-  "cards": [
-    {
-      "cardId": 1,
-      "cardNumber": "9410-****-****-1234",
-      "cardType": "DEBIT",
-      "status": "ACTIVE",
-      "expiryDate": "01/29",
-      "dailyLimit": 1000000,
-      "dailyUsed": 150000,
-      "dailyRemaining": 850000
-    }
-  ]
-}
-```
-
----
-
-### 3. 결제 승인 요청
+### 2. 결제 요청
 ```http
 POST /api/v1/cards/{cardId}/payments
-X-User-Id: 1
+X-User-Id: USR-a1b2c3d4
 X-User-Role: USER
 X-Idempotency-Key: payment-uuid-12345
-Content-Type: application/json
 
 {
   "amount": 50000,
-  "merchantName": "스타벅스 강남점",
-  "merchantId": "MERCHANT-001"
+  "merchantName": "테스트가맹점",
+  "merchantId": "M001"
 }
 ```
 
 **Response (200 OK)**
 ```json
 {
-  "paymentId": "pay-uuid-abcd",
-  "status": "APPROVED",
-  "cardNumber": "9410-****-****-1234",
+  "paymentId": "PAY-a1b2c3d4",
+  "cardId": "CRD-12345678",
   "amount": 50000,
-  "merchantName": "스타벅스 강남점",
-  "approvalNumber": "12345678",
-  "approvedAt": "2024-01-15T14:30:00"
+  "status": "APPROVED",
+  "approvalNumber": "AP123456",
+  "merchantName": "테스트가맹점",
+  "approvedAt": "2024-01-15T12:00:00"
 }
 ```
 
-**결제 거절 시 (400 Bad Request)**
-```json
-{
-  "paymentId": "pay-uuid-efgh",
-  "status": "DECLINED",
-  "error": "DAILY_LIMIT_EXCEEDED",
-  "message": "일일 한도를 초과했습니다.",
-  "dailyLimit": 1000000,
-  "dailyUsed": 980000,
-  "requestedAmount": 50000
-}
-```
-
-**이벤트 발행**: `card.payment.completed`
-
----
-
-### 4. 결제 취소
+### 3. 결제 취소
 ```http
 POST /api/v1/cards/payments/{paymentId}/cancel
-X-User-Id: 1
+X-User-Id: USR-a1b2c3d4
 X-User-Role: USER
-Content-Type: application/json
 
 {
-  "reason": "고객 변심"
+  "reason": "고객 요청 취소"
 }
 ```
 
-**Response (200 OK)**
-```json
-{
-  "paymentId": "pay-uuid-abcd",
-  "status": "CANCELLED",
-  "cancelledAt": "2024-01-15T15:00:00",
-  "refundAmount": 50000
-}
-```
-
-**이벤트 발행**: `card.payment.cancelled`
-
----
-
-### 5. 카드 한도 변경
+### 4. 카드 상태 변경
 ```http
-PUT /api/v1/cards/{cardId}/limits
-X-User-Id: 1
+PATCH /api/v1/cards/{cardId}/status
+X-User-Id: USR-a1b2c3d4
 X-User-Role: USER
-Content-Type: application/json
 
 {
-  "dailyLimit": 2000000,
-  "monthlyLimit": 20000000
+  "action": "BLOCK",
+  "reason": "분실 신고"
 }
 ```
 
-**Response (200 OK)**
-```json
-{
-  "cardId": 1,
-  "dailyLimit": 2000000,
-  "monthlyLimit": 20000000,
-  "updatedAt": "2024-01-15T16:00:00"
-}
-```
-
----
-
-### 6. 카드 분실 신고
-```http
-POST /api/v1/cards/{cardId}/block
-X-User-Id: 1
-X-User-Role: USER
-Content-Type: application/json
-
-{
-  "reason": "분실"
-}
-```
-
-**Response (200 OK)**
-```json
-{
-  "cardId": 1,
-  "status": "BLOCKED",
-  "blockedAt": "2024-01-15T17:00:00",
-  "message": "카드가 정지되었습니다."
-}
-```
-
----
-
-### 7. 결제 내역 조회
+### 5. 결제 내역 조회
 ```http
 GET /api/v1/cards/{cardId}/payments?page=0&size=20
-X-User-Id: 1
+X-User-Id: USR-a1b2c3d4
 X-User-Role: USER
-```
-
-**Response (200 OK)**
-```json
-{
-  "content": [
-    {
-      "paymentId": "pay-uuid-abcd",
-      "amount": 50000,
-      "merchantName": "스타벅스 강남점",
-      "status": "APPROVED",
-      "approvedAt": "2024-01-15T14:30:00"
-    },
-    {
-      "paymentId": "pay-uuid-ijkl",
-      "amount": 30000,
-      "merchantName": "편의점",
-      "status": "APPROVED",
-      "approvedAt": "2024-01-15T12:00:00"
-    }
-  ],
-  "page": 0,
-  "size": 20,
-  "totalElements": 45
-}
 ```
 
 ---
@@ -522,56 +476,68 @@ X-User-Role: USER
 ## 📂 패키지 구조
 
 ```
-com.junbank.card
+com.jun_bank.card_service
 ├── CardServiceApplication.java
-├── domain
-│   ├── entity
-│   │   ├── Card.java
-│   │   └── Payment.java
-│   ├── enums
-│   │   ├── CardType.java
-│   │   ├── CardStatus.java
-│   │   └── PaymentStatus.java
-│   └── repository
-│       ├── CardRepository.java
-│       └── PaymentRepository.java
-├── application
-│   ├── service
-│   │   ├── CardService.java
-│   │   └── PaymentService.java
-│   ├── dto
-│   │   ├── request
-│   │   │   ├── CardIssueRequest.java
-│   │   │   ├── PaymentRequest.java
-│   │   │   └── LimitChangeRequest.java
-│   │   └── response
-│   │       ├── CardResponse.java
-│   │       └── PaymentResponse.java
-│   └── exception
-│       ├── CardNotFoundException.java
-│       ├── LimitExceededException.java
-│       └── PaymentDeclinedException.java
-├── infrastructure
-│   ├── kafka
-│   │   ├── CardEventProducer.java
-│   │   └── AccountEventConsumer.java
-│   ├── feign
-│   │   └── AccountServiceClient.java
-│   ├── resilience
-│   │   ├── CircuitBreakerConfig.java
-│   │   ├── RetryConfig.java
-│   │   ├── BulkheadConfig.java
-│   │   └── RateLimiterConfig.java
-│   ├── external
-│   │   └── ExternalCardApiClient.java
-│   └── config
-│       ├── JpaConfig.java
-│       └── KafkaConfig.java
-└── presentation
-    ├── controller
-    │   └── CardController.java
-    └── advice
-        └── CardExceptionHandler.java
+├── global/                              # 전역 설정 레이어
+│   ├── config/
+│   │   ├── JpaConfig.java
+│   │   ├── QueryDslConfig.java
+│   │   ├── KafkaProducerConfig.java
+│   │   ├── KafkaConsumerConfig.java
+│   │   ├── SecurityConfig.java
+│   │   ├── FeignConfig.java
+│   │   ├── SwaggerConfig.java
+│   │   └── AsyncConfig.java
+│   ├── infrastructure/
+│   │   ├── entity/
+│   │   │   └── BaseEntity.java
+│   │   └── jpa/
+│   │       └── AuditorAwareImpl.java
+│   ├── security/
+│   │   ├── UserPrincipal.java
+│   │   ├── HeaderAuthenticationFilter.java
+│   │   └── SecurityContextUtil.java
+│   ├── feign/
+│   │   ├── FeignErrorDecoder.java
+│   │   └── FeignRequestInterceptor.java
+│   └── aop/
+│       └── LoggingAspect.java
+└── domain/
+    ├── card/                            # 카드 Bounded Context ★
+    │   ├── domain/                      # 순수 도메인 ✅
+    │   │   ├── exception/
+    │   │   │   ├── CardErrorCode.java   # CRD_xxx 에러 코드
+    │   │   │   └── CardException.java
+    │   │   └── model/
+    │   │       ├── Card.java            # Aggregate Root
+    │   │       ├── CardType.java
+    │   │       ├── CardStatus.java
+    │   │       └── vo/
+    │   │           ├── CardId.java
+    │   │           ├── CardNumber.java  # Luhn 알고리즘
+    │   │           └── Money.java
+    │   ├── application/                 # (TODO)
+    │   ├── infrastructure/
+    │   │   ├── persistence/
+    │   │   ├── kafka/
+    │   │   ├── feign/
+    │   │   └── resilience/              # Resilience4j (TODO)
+    │   └── presentation/                # (TODO)
+    │
+    └── payment/                         # 결제 Bounded Context ★
+        ├── domain/                      # 순수 도메인 ✅
+        │   ├── exception/
+        │   │   ├── PaymentErrorCode.java # PAY_xxx 에러 코드
+        │   │   └── PaymentException.java
+        │   └── model/
+        │       ├── Payment.java         # Aggregate Root
+        │       ├── PaymentStatus.java
+        │       └── vo/
+        │           ├── PaymentId.java
+        │           └── Money.java
+        ├── application/                 # (TODO)
+        ├── infrastructure/              # (TODO)
+        └── presentation/                # (TODO)
 ```
 
 ---
@@ -608,100 +574,80 @@ resilience4j:
   circuitbreaker:
     instances:
       paymentCircuitBreaker:
-        failureRateThreshold: 40
-        slowCallRateThreshold: 50
-        slowCallDurationThreshold: 2s
-        slidingWindowSize: 20
-        waitDurationInOpenState: 15s
+        failureRateThreshold: 40          # 실패율 40% 초과시 OPEN
+        slowCallRateThreshold: 50         # 느린 호출 50% 초과시 OPEN
+        slowCallDurationThreshold: 2s     # 2초 이상 걸리면 느린 호출
+        slidingWindowSize: 20             # 최근 20개 요청 기준
+        waitDurationInOpenState: 15s      # OPEN 후 15초 대기
 
   retry:
     instances:
       paymentRetry:
-        maxAttempts: 2
-        waitDuration: 500ms
+        maxAttempts: 2                    # 최대 2회 시도
+        waitDuration: 500ms               # 재시도 간격
 
   bulkhead:
     instances:
       paymentBulkhead:
-        maxConcurrentCalls: 50
-        maxWaitDuration: 100ms
+        maxConcurrentCalls: 50            # 동시 50건 제한
+        maxWaitDuration: 100ms            # 대기 시간
 
   ratelimiter:
     instances:
       externalCardApiRateLimiter:
-        limitForPeriod: 50
+        limitForPeriod: 50                # 초당 50건
         limitRefreshPeriod: 1s
-```
-
----
-
-## 🧪 테스트 시나리오
-
-### 1. Circuit Breaker 테스트
-```java
-@Test
-void 연속_실패시_회로_차단() {
-    // Given: Account Service가 계속 실패하도록 설정
-    
-    // When: 20번 결제 요청 (10번 실패 → failureRate 50%)
-    
-    // Then: 
-    // 1. 11번째 요청부터 CircuitBreakerOpenException 발생
-    // 2. Fallback 메서드 호출됨
-    // 3. 15초 후 HALF_OPEN 상태로 전환
-}
-```
-
-### 2. Rate Limiter 테스트
-```java
-@Test
-void 초당_요청_제한_확인() {
-    // Given: 초당 50건 제한 설정
-    
-    // When: 1초 내에 60건 요청
-    
-    // Then:
-    // 1. 50건 성공
-    // 2. 10건 RequestNotPermitted 예외
-}
-```
-
-### 3. API 테스트
-```bash
-# 결제 요청
-curl -X POST http://localhost:8080/api/v1/cards/1/payments \
-  -H "Content-Type: application/json" \
-  -H "X-User-Id: 1" \
-  -H "X-User-Role: USER" \
-  -H "X-Idempotency-Key: test-payment-1" \
-  -d '{"amount":50000,"merchantName":"테스트가맹점","merchantId":"M001"}'
-
-# 결제 취소
-curl -X POST http://localhost:8080/api/v1/cards/payments/pay-uuid-abcd/cancel \
-  -H "Content-Type: application/json" \
-  -H "X-User-Id: 1" \
-  -H "X-User-Role: USER" \
-  -d '{"reason":"테스트 취소"}'
 ```
 
 ---
 
 ## 📝 구현 체크리스트
 
-- [ ] Entity, Repository 생성
-- [ ] CardService 구현
-- [ ] PaymentService 구현
-- [ ] **CircuitBreaker 적용**
-- [ ] **Retry 적용**
-- [ ] **Bulkhead 적용**
-- [ ] **RateLimiter 적용**
-- [ ] **Fallback 메서드 구현**
-- [ ] Controller 구현
-- [ ] Kafka Producer 구현
-- [ ] Kafka Consumer 구현
-- [ ] Feign Client 구현 (Account Service)
-- [ ] External API Client 구현 (Mock)
-- [ ] Resilience4j 테스트 코드
-- [ ] 단위 테스트
-- [ ] 통합 테스트
-- [ ] API 문서화 (Swagger)
+### Domain Layer ✅ (14개 파일, 2개 도메인)
+
+#### card 도메인 (카드) - 8개
+- [x] CardErrorCode (CRD_xxx 에러 코드)
+- [x] CardException (팩토리 메서드 패턴)
+- [x] CardType (정책 메서드)
+- [x] CardStatus (정책 메서드, 상태 전이)
+- [x] CardId VO
+- [x] CardNumber VO (Luhn 알고리즘)
+- [x] Money VO
+- [x] Card (한도 관리)
+
+#### payment 도메인 (결제) - 6개
+- [x] PaymentErrorCode (PAY_xxx 에러 코드)
+- [x] PaymentException (팩토리 메서드 패턴)
+- [x] PaymentStatus (정책 메서드, 상태 전이)
+- [x] PaymentId VO
+- [x] Money VO
+- [x] Payment
+
+### Application Layer
+- [ ] CardUseCase
+- [ ] PaymentUseCase
+- [ ] CardPort
+- [ ] PaymentPort
+- [ ] DTO 정의
+
+### Infrastructure Layer
+- [ ] CardEntity
+- [ ] PaymentEntity
+- [ ] JpaRepository
+- [ ] CircuitBreakerConfig
+- [ ] RetryConfig, BulkheadConfig, RateLimiterConfig
+- [ ] CardKafkaProducer
+- [ ] CardKafkaConsumer
+- [ ] AccountServiceClient (Feign)
+
+### Presentation Layer
+- [ ] CardController
+- [ ] PaymentController
+- [ ] Request/Response DTO
+- [ ] Swagger 문서화
+
+### 테스트
+- [ ] 도메인 단위 테스트
+- [ ] 한도 검증 테스트
+- [ ] Circuit Breaker 테스트
+- [ ] Rate Limiter 테스트
